@@ -7,7 +7,43 @@ from keras import backend as K
 
 
 class LSTMDecoderCell(ExtendedRNNCell):
+    '''
+        This cell implements an LSTM which (IMO) is best described in http://colah.github.io/posts/2015-08-Understanding-LSTMs/.
 
+        **As a black box**
+            Visualize how does the LSTM Cell fits into the Recurrent Framework. 
+            It outputs a vector (h(t)). This vector is then passed through an activation (sigmoid typically) OUTSIDE of the cell, within the entire mdoel.
+            So h(t), h(t-1) ... are the outputs of the LSTM cell,  
+                but y(t), y(t-1) ... are the outputs of the network which can be compared to the true outputs. p
+            (More on this on http://www.deeplearningbook.org/contents/rnn.html, pg 378, figure 10.3 )
+
+            Now, for a particular cell
+            __Inputs__:
+                x (input); h(t-1) (hidden state); c(t-1) (memory)
+            __Outputs__:
+                h(t) (output of the cell), c(t) (memory of the cell), and [OPTIONAL] y(t) (See paragraph above)
+
+
+        **Peeking In**
+            An LSTM can be categorized by the following equations:
+
+            _Forget Gate_:
+                f(t) = sigmoid( W_f \times [ h(t-1), x(t) ] + b_f )
+
+            _Input Gate_:
+                i(t) = sigmoid( W_i \times [ h(t-1), x(t) ] + b_i )
+
+            _Memory_:
+                c_cap = tanh( W_c \times [ h(t-1), x(t) ] + b_c )
+
+                c(t) = f(t)*c(t-1) + i(t)*c_cap   (Elementwise multiplication)
+
+            _Output Gate_:
+                o(t) = sigmoid( W_o \times [ h(t-1), x(t) ] + b_o )
+
+            _Output_:
+                h(t) = o(t)*tanh(c(t))        
+    '''
     def __init__(self, hidden_dim=None, **kwargs):
         if hidden_dim:
             self.hidden_dim = hidden_dim
