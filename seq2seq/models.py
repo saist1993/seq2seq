@@ -1,8 +1,8 @@
 from __future__ import absolute_import
 from recurrentshop import LSTMCell, RecurrentSequential
-from .cells import LSTMDecoderCell, AttentionDecoderCell
+from .cells import LSTMDecoderCell, AttentionDecoderCell, PointerDecoderCell
 from keras.models import Sequential, Model
-from keras.layers import Dense, Dropout, TimeDistributed, Bidirectional, Input
+from keras.layers import Dense, Dropout, TimeDistributed, Bidirectional, Input, Activation
 
 
 '''
@@ -39,6 +39,11 @@ def SimpleSeq2Seq(output_dim, output_length, hidden_dim=None, input_shape=None,
 
     '''
 
+    '''
+        Below block is trying to construct the shape tuple which is (batch_size,input_dim,input_length)
+        batch_shape(batch_size,input_dim,input_length)
+        # TODO: Add more information about the statefulness of the LSTM and the input_shape expected by the same.    
+    '''
     if isinstance(depth, int):
         depth = (depth, depth)
     if batch_input_shape:
@@ -55,6 +60,11 @@ def SimpleSeq2Seq(output_dim, output_length, hidden_dim=None, input_shape=None,
         raise TypeError
     if hidden_dim is None:
         hidden_dim = output_dim
+    '''
+        batch_input_shape=(batch_size, timesteps, data_dim)
+        for lstm arguments :- https://keras.io/layers/recurrent/#lstm
+            >Specifically hidden_dim = units and it is a Positive integer representing dimensionality of the output space.
+    '''    
     encoder = RecurrentSequential(unroll=unroll, stateful=stateful)
     encoder.add(LSTMCell(hidden_dim, batch_input_shape=(shape[0], shape[-1])))
 
@@ -64,6 +74,10 @@ def SimpleSeq2Seq(output_dim, output_length, hidden_dim=None, input_shape=None,
 
     decoder = RecurrentSequential(unroll=unroll, stateful=stateful,
                                   decode=True, output_length=output_length)
+    ''' 
+        hidden_dim is here equal to the output dim of the encoder thing. Hence should not have shape error.
+        Also the second arguments is the expected dimension of the input. See below comment
+        '''
     decoder.add(Dropout(dropout, batch_input_shape=(shape[0], hidden_dim)))
 
     if depth[1] == 1:
@@ -76,9 +90,20 @@ def SimpleSeq2Seq(output_dim, output_length, hidden_dim=None, input_shape=None,
     decoder.add(Dropout(dropout))
     decoder.add(LSTMCell(output_dim))
 
+    '''
+        This returns a tensor 
+            >batch_shape(batch_size,input_dim,input_length)
+        https://keras.io/layers/recurrent/ :- Note on using statefulness in RNNs
+    '''
     _input = Input(batch_shape=shape)
+
     x = encoder(_input)
     output = decoder(x)
+    ''' 
+    This Model thing; takes _input as the input and applies everything to reach output. 
+    This model will include all layers required in the computation of output given _input. So one can 
+    think of them as Theano function.
+     '''
     return Model(_input, output)
 
 
@@ -139,7 +164,10 @@ def Seq2Seq(output_dim, output_length, batch_input_shape=None,
 
 
     '''
-
+    ''' 
+        Below block is used for computing the shape - batch_input_shape=(batch_size, timesteps, data_dim) 
+        batch_size creates a statefull LSTM while None makes it unstateful 
+    '''
     if isinstance(depth, int):
         depth = (depth, depth)
     if batch_input_shape:
@@ -157,6 +185,12 @@ def Seq2Seq(output_dim, output_length, batch_input_shape=None,
     if hidden_dim is None:
         hidden_dim = output_dim
 
+    ''' 
+        Sequential model :- https://keras.io/layers/recurrent/
+        unroll - Nothing important 
+        return_state -  Boolean. Whether to return the last state in addition to the output.
+
+    '''
     encoder = RecurrentSequential(readout=True, state_sync=inner_broadcast_state,
                                   unroll=unroll, stateful=stateful,
                                   return_states=broadcast_state)
@@ -164,10 +198,16 @@ def Seq2Seq(output_dim, output_length, batch_input_shape=None,
         encoder.add(LSTMCell(hidden_dim, batch_input_shape=(shape[0], hidden_dim)))
         encoder.add(Dropout(dropout))
 
+    ''' 
+        TimeDistributed :- https://keras.io/layers/wrappers/
+    '''
     dense1 = TimeDistributed(Dense(hidden_dim))
     dense1.supports_masking = True
     dense2 = Dense(output_dim)
 
+    ''' 
+        Readout lets you feed the output of your RNN from the previous time step back to the current time step.
+    '''
     decoder = RecurrentSequential(readout='add' if peek else 'readout_only',
                                   state_sync=inner_broadcast_state, decode=True,
                                   output_length=output_length, unroll=unroll,
@@ -177,6 +217,9 @@ def Seq2Seq(output_dim, output_length, batch_input_shape=None,
         decoder.add(Dropout(dropout, batch_input_shape=(shape[0], output_dim)))
         decoder.add(LSTMDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim,
                                     batch_input_shape=(shape[0], output_dim)))
+
+
+
 
     _input = Input(batch_shape=shape)
     _input._keras_history[0].supports_masking = True
@@ -192,7 +235,7 @@ def Seq2Seq(output_dim, output_length, batch_input_shape=None,
     inputs = [_input]
     if teacher_force:
         truth_tensor = Input(batch_shape=(shape[0], output_length, output_dim))
-        truth_tensor._keras_history[0].supports_masking = True
+        truth_tensor._keras_history[0].supports_masking = Trueoutput_dim
         inputs += [truth_tensor]
 
 
@@ -232,7 +275,7 @@ def AttentionSeq2Seq(output_dim, output_length, batch_input_shape=None,
     The weight alpha[i, j] for each hj is computed as follows:
     energy = a(s(i-1), H(j))
     alpha = softmax(energy)
-    Where a is a feed forward network.
+    Where a is a feed forward networ k.
 
     '''
 
@@ -285,6 +328,114 @@ def AttentionSeq2Seq(output_dim, output_length, batch_input_shape=None,
         decoder.add(Dropout(dropout))
         decoder.add(LSTMDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim))
     
+    inputs = [_input]
+    decoded = decoder(encoded)
+    model = Model(inputs, decoded)
+    return model
+
+
+def Pointer(output_dim, output_length, batch_input_shape=None,
+                     batch_size=None, input_shape=None, input_length=None,
+                     input_dim=None, hidden_dim=None, depth=1,
+                     bidirectional=True, unroll=False, stateful=False, dropout=0.0,):
+    '''
+    This is an attention Seq2seq model based on [3].
+    Here, there is a soft allignment between the input and output sequence elements.
+    A bidirection encoder is used by default. There is no hidden state transfer in this
+    model.
+
+    The  math:
+
+            Encoder:
+            X = Input Sequence of length m.
+            H = Bidirection_LSTM(X); Note that here the LSTM has return_sequences = True,
+            so H is a sequence of vectors of length m.
+
+            Decoder:
+    y(i) = LSTM(s(i-1), y(i-1), v(i)); Where s is the hidden state of the LSTM (h and c)
+    and v (called the context vector) is a weighted sum over H:
+
+    v(i) =  sigma(j = 0 to m-1)  alpha(i, j) * H(j)
+
+    The weight alpha[i, j] for each hj is computed as follows:
+    energy = a(s(i-1), H(j))
+    alpha = softmax(energy)
+    Where a is a feed forward networ k.
+
+    '''
+
+    if isinstance(depth, int):
+        depth = (depth, depth)
+    if batch_input_shape:
+        shape = batch_input_shape
+    elif input_shape:
+        shape = (batch_size,) + input_shape
+    elif input_dim:
+        if input_length:
+            shape = (batch_size,) + (input_length,) + (input_dim,)
+        else:
+            shape = (batch_size,) + (None,) + (input_dim,)
+    else:
+        # TODO Proper error message
+        raise TypeError
+    if hidden_dim is None:
+        hidden_dim = output_dim
+    # print shape    
+
+    _input = Input(batch_shape=shape)
+    _input._keras_history[0].supports_masking = True
+
+    encoder = RecurrentSequential(unroll=unroll, stateful=False,
+                                  return_sequences=True)
+    encoder.add(LSTMCell(hidden_dim, batch_input_shape=(shape[0], shape[2])))
+
+    for _ in range(1, depth[0]):
+        encoder.add(Dropout(dropout))
+        encoder.add(LSTMCell(hidden_dim))
+
+    if bidirectional:
+        encoder = Bidirectional(encoder, merge_mode='sum')
+        encoder.forward_layer.build(shape)
+        encoder.backward_layer.build(shape)
+        # patch
+        encoder.layer = encoder.forward_layer
+
+    encoded = encoder(_input)
+    decoder = RecurrentSequential(decode=True, output_length=output_length,
+                                  unroll=unroll, stateful=stateful,return_sequences=True)
+
+    # decoder.add(Dropout(dropout, batch_input_shape=(shape[0], shape[1], hidden_dim)))
+    # if depth[1] == 1:
+    # decoder.add(PointerDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim))
+    # decoder.add(LSTMDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim))
+
+    decoder.add(PointerDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim,batch_input_shape=(shape[0], shape[1], hidden_dim)))
+
+    # decoder.add(TimeDistributed(Activation('softmax')))
+    # decoder.add(TimeDistributed(Activation('softmax')))
+    # output = TimeDistributed(Dense(output_dim, activation='softmax'))
+    # output = TimeDistributed(Activation='softmax')
+
+    # output = TimeDistributed(Dense(output_dim, activation='softmax'))
+    # Dense(class_count, activation='softmax')(x)
+    # decoder.add(Dense(output_dim, activation='softmax')(x))
+    # else:
+    #     decoder.add(PointerDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim))
+    #     for _ in range(depth[1] - 2):
+    #         decoder.add(Dropout(dropout))
+    #         decoder.add(LSTMDecoderCell(output_dim=hidden_dim, hidden_dim=hidden_dim))
+    #     decoder.add(Dropout(dropout))
+    #     decoder.add(LSTMDecoderCell(output_dim=output_dim, hidden_dim=hidden_dim))
+
+
+    # Softmax is outside
+    # inputs = [_input]
+    # decoded = decoder(encoded)
+    # outputs = output(decoded)
+    # model = Model(inputs, outputs)
+    # return model 
+
+    # Softmax is inside cell
     inputs = [_input]
     decoded = decoder(encoded)
     model = Model(inputs, decoded)
